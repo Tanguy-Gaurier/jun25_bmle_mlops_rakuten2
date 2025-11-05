@@ -145,7 +145,31 @@ class DataTransformationPipeline:
         # Branche Texte
         # ========================================
         logger.info("Construction de la branche texte...")
-        text_pipeline = create_text_pipeline_from_cfg(self.config.text)
+        
+        # Passer la config complète avec SVD
+        # Au lieu de self.config.text, on passe self.config["features"]["text"]
+        # ou on construit un dict avec toutes les sections nécessaires
+        text_config = {}
+        
+        # Récupérer la config text complète
+        if hasattr(self.config, 'text'):
+            text_config = dict(self.config.text) if hasattr(self.config.text, '__iter__') else {}
+        else:
+            # Fallback: construire depuis features.text
+            text_config = self.config.get("features.text", {})
+        
+        # CRITIQUE: S'assurer que la section SVD est incluse
+        if "svd" not in text_config:
+            svd_config = self.config.get("features.text.svd", {})
+            if svd_config:
+                text_config["svd"] = svd_config
+                logger.info(f"   Section SVD ajoutée manuellement: {svd_config}")
+        
+        logger.info(f"   Config texte complète: {list(text_config.keys())}")
+        if "svd" in text_config:
+            logger.info(f"   Config SVD présente: {text_config['svd']}")
+        
+        text_pipeline = create_text_pipeline_from_cfg(text_config)
         transformers.append(("text", text_pipeline))
         
         # Poids de la branche texte
@@ -203,7 +227,7 @@ class DataTransformationPipeline:
                 logger.info(f"  Device: {cnn_config.get('device', 'auto')}")
                 logger.info(f"  Image dir: {image_dir}")
                 
-                # Creer le CNNFeaturizer
+                # Creer le CNNFeaturizer (SANS les paramètres SVD)
                 cnn_transformer = CNNFeaturizer(
                     image_dir=image_dir,
                     arch=cnn_config.get("arch", "resnet50"),
@@ -239,18 +263,43 @@ class DataTransformationPipeline:
                     foreach=cnn_config.get("foreach", True),
                 )
                 
-                # Ajouter au pipeline
-                transformers.append(("image_cnn", cnn_transformer))
+                # ========================================
+                # WRAPPER SVD : Appliquer SVD APRÈS le CNN si activé
+                # ========================================
+                svd_config = cnn_config.get("svd", {})
+                svd_enabled = svd_config.get("enabled", False)
+                
+                logger.info(f"   CNN config SVD: {svd_config}")
+                
+                if svd_enabled:
+                    from sklearn.pipeline import Pipeline as SkPipeline
+                    from sklearn.decomposition import TruncatedSVD
+                    from sklearn.preprocessing import Normalizer
+                    
+                    n_components = int(svd_config.get("n_components", 500))
+                    random_state = int(svd_config.get("random_state", 42))
+                    
+                    logger.info(f"   SVD CNN activée: n_components={n_components}")
+                    logger.info(f"   Création du wrapper Pipeline: CNN → SVD → L2 norm")
+                    
+                    # Wrapper avec SVD
+                    cnn_pipeline = SkPipeline([
+                        ("cnn", cnn_transformer),
+                        ("svd", TruncatedSVD(n_components=n_components, random_state=random_state)),
+                        ("l2norm", Normalizer(copy=False))
+                    ])
+                    
+                    transformers.append(("image_cnn", cnn_pipeline))
+                    logger.info(f"   SVD post-CNN: {n_components} composantes")
+                else:
+                    # Pas de SVD, utiliser le CNN directement
+                    transformers.append(("image_cnn", cnn_transformer))
+                    logger.info(f"   SVD post-CNN: désactivée")
                 
                 # Poids
                 cnn_weight = self.config.get("fusion.weights.image_cnn", 1.0)
                 weights["image_cnn"] = float(cnn_weight)
                 logger.info(f"  Poids image_cnn: {cnn_weight}")
-                
-                # SVD post-CNN (optionnel)
-                svd_enabled = self.config.get("features.image.cnn.svd.enabled", False)
-                if svd_enabled:
-                    logger.info("  SVD post-CNN active")
         
         # ========================================
         # Branche ViT (optionnel)
