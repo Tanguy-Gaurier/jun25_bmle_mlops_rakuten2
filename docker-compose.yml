@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: rakuten_db
+    restart: unless-stopped
+    ports:
+      - "5433:5432"  # Expose le port Postgres pour les clients locaux
+    environment:
+      POSTGRES_DB: rakuten
+      POSTGRES_USER: mlops
+      POSTGRES_PASSWORD: mlops
+    volumes:
+      - ./import:/import:ro   # Monte les CSV d'import en lecture seule dans le conteneur
+      - ./sql:/sql:ro         # Monte les scripts SQL pour des exécutions répétables via init.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlops -d rakuten"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # Aucun autre service n'est requis : cette base sert de socle au pipeline MLOps.
