@@ -610,9 +610,15 @@ def main():
             
             # Nom du modèle
             model_name = args.model_name or f"rakuten_{config.model['name']}_{timestamp}"
-            
-            # Chemin du modèle
-            model_path = stage4.trainer.get_model_path()
+
+            # Chemin du modèle : on utilise directement ceux de la pipeline d'entraînement
+            if hasattr(stage4, "model_path") and stage4.model_path is not None:
+                model_path = stage4.model_path
+            else:
+                # fallback très simple si jamais
+                from pathlib import Path
+                model_dir = Path(config.paths["model_dir"])
+                model_path = model_dir / "model.joblib"
             
             # Enregistrer le modèle
             try:
