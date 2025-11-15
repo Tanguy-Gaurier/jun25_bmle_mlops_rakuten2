@@ -32,7 +32,17 @@ until $COMPOSE_CMD exec -T postgres pg_isready -U mlops -d rakuten >/dev/null 2>
 done
 
 echo "Postgres est prêt. Calcul du hash des CSV..."
-DATA_HASH=$(python "$PY_SCRIPT_WIN")
+# Détection automatique Windows vs Linux
+if command -v cygpath >/dev/null 2>&1; then
+  # Windows (Git Bash)
+  echo "[INFO] Windows détecté - utilisation du chemin Windows"
+  DATA_HASH=$(python "$PY_SCRIPT_WIN")
+else
+  # Linux / macOS
+  echo "[INFO] Linux/Mac détecté - utilisation du chemin UNIX"
+  DATA_HASH=$(python "$PY_SCRIPT")
+fi
+
 if [[ -z "$DATA_HASH" ]]; then
   echo "Impossible de récupérer le hash des données."
   exit 1
