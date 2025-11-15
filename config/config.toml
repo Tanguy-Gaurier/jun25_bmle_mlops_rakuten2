@@ -39,7 +39,12 @@ log_dir = "C:/Users/colle/Desktop/rakuten-logs"
 # Export features intermédiaires
 export_features = true
 
-
+[database]
+host = "localhost"
+port = 5433
+database = "rakuten"
+user = "mlops"
+password = "mlops"
 # ========================================
 # REPRODUCTIBILITÉ
 # ========================================
@@ -120,7 +125,7 @@ sublinear_tf = true
 # --- Pondération branches texte ---
 [features.text.weights]
 tfidf_word = 1.0
-tfidf_char = 0.6
+tfidf_char = 0.0
 has_desc = 0.2
 title_len = 0.1
 text_stats = 0.25

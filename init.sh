@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+export MSYS_NO_PATHCONV=1
+# demande bash sous Windows pour éviter la conversion des chemins par MSYS2
 # Initialise la base Rakuten : schéma, ingestion et enregistrement du hash.
 
 set -euo pipefail
@@ -6,6 +8,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
 SQL_DIR="$ROOT_DIR/sql"
 PY_SCRIPT="$ROOT_DIR/etl/manifest_and_hash.py"
+
+# Sous Git Bash (Windows), convertir en chemin Windows pour que python.exe le comprenne
+if command -v cygpath >/dev/null 2>&1; then
+  PY_SCRIPT_WIN="$(cygpath -w "$PY_SCRIPT")"
+else
+  PY_SCRIPT_WIN="$PY_SCRIPT"
+fi
 
 if command -v docker-compose >/dev/null 2>&1; then
   COMPOSE_CMD="docker-compose"
@@ -23,7 +32,7 @@ until $COMPOSE_CMD exec -T postgres pg_isready -U mlops -d rakuten >/dev/null 2>
 done
 
 echo "Postgres est prêt. Calcul du hash des CSV..."
-DATA_HASH=$(python "$PY_SCRIPT")
+DATA_HASH=$(python "$PY_SCRIPT_WIN")
 if [[ -z "$DATA_HASH" ]]; then
   echo "Impossible de récupérer le hash des données."
   exit 1

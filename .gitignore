@@ -18,6 +18,7 @@ data/images/
 Scripts perso.raku
 /venv/
 /.venv*/
+/venv_raku310
 
 # caches / artefacts locaux
 __pycache__/

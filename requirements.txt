@@ -1,3 +1,5 @@
+# Requirements file for the project
+# pip install -r requirements.txt
 IPython==8.18
 emoji==2.14.1
 imbalanced-learn==0.13.0
@@ -7,13 +9,13 @@ langdetect==1.0.9
 matplotlib==3.9.2
 member==0.0.1
 nltk==3.9.1
-numpy==2.3.2
+numpy==1.26.4
 pandas==2.3.1
 pillow==11.3.0
 pytest==8.4.1
 shap==0.48.0
 scikit-learn==1.6.1
-scipy==1.16.1
+scipy==1.15.3
 squarify==0.4.3
 streamlit==1.49.1
 toml==0.10.2
@@ -24,5 +26,10 @@ tqdm==4.67.1
 wordcloud==1.9.4
 xgboost==1.7.6
 lightgbm==4.0.0
-transformers==4.19.1
+transformers==4.40.2
 huggingface-hub==0.35.0
+psycopg2-binary>=2.9.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.0.0
+python-json-logger>=2.0.0
