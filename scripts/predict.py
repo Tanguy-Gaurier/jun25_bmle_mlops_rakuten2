@@ -22,6 +22,7 @@ Utilisation:
     
     # Avec sauvegarde en base
     python scripts/predict.py --model-id 1 --save-to-db
+    python scripts/predict.py --model-path models/model_full_pipeline.joblib --source postgres --output results/predictions/predictions_postgres.csv --verbose
 """
 import argparse
 import logging
@@ -160,51 +161,47 @@ class PostgresModelLoader:
             conn.close()
 
 
-def load_data_from_postgres(db_config: dict, dataset_type: str = "test") -> pd.DataFrame:
+def load_data_from_postgres(db_config, dataset_type="test"):
     """
     Charge les données depuis PostgreSQL.
-    
-    Args:
-        db_config: Configuration de la base
-        dataset_type: 'test' ou 'unlabeled'
-    
-    Returns:
-        DataFrame avec les données
+    dataset_type = "test" -> items sans label (prdtypecode IS NULL)
     """
-    conn = psycopg2.connect(**db_config)
-    
+    logger.info("Chargement des données depuis PostgreSQL (%s)...", dataset_type)
+
+    conn = psycopg2.connect(
+        database=db_config["database"],
+        user=db_config["user"],
+        password=db_config["password"],
+        host=db_config["host"],
+        port=db_config["port"],
+    )
+
     try:
         if dataset_type == "test":
-            # Charger les données de test (sans labels)
             query = """
-                SELECT 
-                    row_index,
+                SELECT
                     designation,
                     description,
                     productid,
                     imageid
                 FROM project.items
                 WHERE prdtypecode IS NULL
-                ORDER BY row_index
+                ORDER BY productid
             """
         else:
-            # Charger toutes les données sans labels
-            query = """
-                SELECT 
-                    row_index,
-                    designation,
-                    description,
-                    productid,
-                    imageid
-                FROM project.items
-                ORDER BY row_index
-            """
-        
+            raise ValueError(f"dataset_type inconnu: {dataset_type}")
+
         df = pd.read_sql_query(query, conn)
-        logger.info(f" {len(df)} échantillons chargés depuis PostgreSQL")
-        
+
+        # On recrée un row_index côté Pandas comme dans training.py
+        df = df.reset_index().rename(columns={"index": "row_index"})
+
+        logger.info(" Données chargées depuis PostgreSQL")
+        logger.info("  Shape: %s", df.shape)
+        logger.debug("  Colonnes: %s", list(df.columns))
+
         return df
-        
+
     finally:
         conn.close()
 
@@ -277,9 +274,27 @@ def load_model_and_pipeline(
         feature_pipeline = joblib.load(pipeline_path)
         logger.info(" Pipeline chargé")
     else:
-        logger.warning(f"Pipeline non trouvé: {pipeline_path}")
-        logger.warning("Les features devront être fournies pré-transformées")
+        logger.warning("Pipeline non trouvé: %s", pipeline_path)
+        # Nouveau : gérer le cas où le fichier contient un dict (full pipeline)
         feature_pipeline = None
+
+        if isinstance(model, dict):
+            logger.info("Objet modèle détecté comme dictionnaire, extraction du pipeline et du modèle...")
+            feature_pipeline = model.get("feature_pipeline")
+            inner_model = model.get("model")
+
+            if inner_model is not None:
+                model = inner_model
+                logger.info("  Modèle interne récupéré depuis le dictionnaire.")
+            else:
+                logger.warning("  Aucun modèle interne trouvé dans le dictionnaire, on garde l'objet tel quel.")
+
+            if feature_pipeline is not None:
+                logger.info("  Pipeline de features embarqué récupéré depuis le dictionnaire.")
+            else:
+                logger.warning("  Aucun pipeline de features embarqué trouvé, on utilisera les features brutes.")
+        else:
+            logger.warning("Les features devront être fournies pré-transformées")
     
     return model, feature_pipeline, metadata
 
@@ -550,15 +565,17 @@ def main():
         logger.info("\n" + "=" * 70)
         logger.info("TRANSFORMATION DES FEATURES")
         logger.info("=" * 70)
-        
+
         if feature_pipeline is None:
-            logger.error("Aucun pipeline de features disponible!")
-            logger.error("Le modèle doit être accompagné de son pipeline")
-            return 1
-        
-        with Timer("Transformation des features"):
-            X_transformed = feature_pipeline.transform(X_raw)
-            logger.info(f" Features transformées: {X_transformed.shape}")
+            # Cas 1 : le fichier chargé est déjà un pipeline complet (préprocessing + modèle)
+            logger.warning("Aucun pipeline de features séparé détecté.")
+            logger.warning("On suppose que le modèle chargé est un pipeline complet (features + modèle).")
+            X_transformed = X_raw
+        else:
+            # Cas 2 : modèle simple + pipeline de features séparé
+            with Timer("Transformation des features"):
+                X_transformed = feature_pipeline.transform(X_raw)
+                logger.info(f" Features transformées: {X_transformed.shape}")
         
         # ================================================
         # ÉTAPE 4 : Prédictions

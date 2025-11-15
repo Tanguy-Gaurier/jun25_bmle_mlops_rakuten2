@@ -565,7 +565,8 @@ class ModelEvaluationPipeline:
         y_true: Optional[np.ndarray] = None,
         dataset_name: str = "dataset",
         trainer: Any = None,
-        feature_mapping: Optional[Dict[str, Tuple[int, int]]] = None
+        feature_mapping: Optional[Dict[str, Tuple[int, int]]] = None,
+        feature_pipeline: Any = None, 
     ) -> Dict[str, Any]:
         """
         Execute le pipeline d'evaluation complet.
