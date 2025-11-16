@@ -32,7 +32,7 @@ __pycache__/
 # Données lourdes (adapte si besoin)
 data/images/
 data/raw/
-
+rakuten_dump.sql
 # OS
 .DS_Store
 Thumbs.dbresults/*.npy
