@@ -303,7 +303,7 @@ colsample_bytree = 0.8
 reg_alpha = 0.0
 reg_lambda = 1.0
 tree_method = "hist"
-verbosity = 2            #0=silent, 1=warning, 2=info, 3=debug
+verbosity = 1            #0=silent, 1=warning, 2=info, 3=debug
 early_stopping_rounds = 50
 
 # --- LightGBM ---
@@ -331,6 +331,7 @@ early_stopping_rounds = 50
 [cv]
 enabled = true
 splits = 3
+
 shuffle = true
 random_state = 42
 verbose_progress = true  

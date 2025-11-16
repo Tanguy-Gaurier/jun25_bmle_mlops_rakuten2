@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Pipeline d'entraînement PostgreSQL - Intégration production.
-===========================================================
+Pipeline d'entraînement PostgreSQL - VERSION CORRIGÉE.
+=====================================================
 
 Ce script orchestre le pipeline complet avec PostgreSQL :
 1. Data Ingestion (PostgreSQL)
@@ -10,12 +10,6 @@ Ce script orchestre le pipeline complet avec PostgreSQL :
 4. Model Training
 5. Model Evaluation
 6. Registry en PostgreSQL
-
-Différences avec train_pipeline.py :
-- Charge depuis PostgreSQL au lieu de CSV
-- Enregistre les splits dans project.splits
-- Enregistre le modèle dans project.models
-- Enregistre les prédictions dans project.predictions
 
 Utilisation:
     # Pipeline complet avec PostgreSQL
@@ -118,20 +112,39 @@ class PostgresRegistry:
         finally:
             conn.close()
     
+    def get_latest_dataset_id(self) -> Optional[int]:
+        """Récupère l'ID du dernier dataset."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT dataset_id 
+                FROM project.datasets 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """)
+            result = cursor.fetchone()
+            cursor.close()
+            return result[0] if result else None
+        finally:
+            conn.close()
+    
     def register_split(
         self,
-        dataset_hash: str,
+        dataset_id: int,
         split_name: str,
-        indices: np.ndarray,
+        productids: np.ndarray,
         note: Optional[str] = None
     ) -> None:
         """
         Enregistre un split dans project.splits.
         
+        VERSION CORRIGÉE : Utilise productid au lieu de row_index.
+        
         Args:
-            dataset_hash: Hash du dataset
-            split_name: Nom du split (e.g., 'train_20241113_143000')
-            indices: Array des indices (row_index)
+            dataset_id: ID du dataset
+            split_name: Nom du split ('train', 'val', 'test')
+            productids: Array des productid
             note: Note optionnelle
         """
         conn = self.get_connection()
@@ -139,25 +152,29 @@ class PostgresRegistry:
         try:
             cursor = conn.cursor()
             
-            # Convertir indices en array PostgreSQL
-            indices_array = "{" + ",".join(map(str, indices.tolist())) + "}"
-            
+            # Nettoyer les anciens splits de ce dataset/split_name
             cursor.execute("""
-                INSERT INTO project.splits (dataset_hash, split_name, row_indices, note)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (dataset_hash, split_name) 
-                DO UPDATE SET 
-                    row_indices = EXCLUDED.row_indices,
-                    note = EXCLUDED.note,
-                    created_at = CURRENT_TIMESTAMP
-            """, (dataset_hash, split_name, indices_array, note))
+                DELETE FROM project.splits 
+                WHERE dataset_id = %s AND split = %s
+            """, (dataset_id, split_name))
+            
+            # Insérer les nouveaux productid
+            inserted_count = 0
+            for pid in productids:
+                if pd.notna(pid):  # Ignorer les NaN
+                    cursor.execute("""
+                        INSERT INTO project.splits (dataset_id, productid, split)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (dataset_id, productid) DO UPDATE SET split = %s
+                    """, (dataset_id, int(pid), split_name, split_name))
+                    inserted_count += 1
             
             conn.commit()
-            logger.info(f" Split '{split_name}' enregistré ({len(indices)} samples)")
+            logger.info(f" Split '{split_name}' enregistré ({inserted_count} productid)")
             
         except Exception as e:
             conn.rollback()
-            logger.error(f"Échec d'enregistrement du split: {e}")
+            logger.error(f" Échec d'enregistrement du split: {e}")
             raise
         finally:
             cursor.close()
@@ -207,7 +224,7 @@ class PostgresRegistry:
             
         except Exception as e:
             conn.rollback()
-            logger.error(f"Échec d'enregistrement du modèle: {e}")
+            logger.error(f" Échec d'enregistrement du modèle: {e}")
             raise
         finally:
             cursor.close()
@@ -238,7 +255,7 @@ class PostgresRegistry:
             
             for i, pred_class in enumerate(predictions):
                 confidence = confidences[i] if confidences is not None else None
-                product_id = product_ids[i] if product_ids is not None else None
+                product_id = product_ids.iloc[i] if product_ids is not None else None
                 
                 cursor.execute("""
                     INSERT INTO project.predictions 
@@ -257,7 +274,7 @@ class PostgresRegistry:
             
         except Exception as e:
             conn.rollback()
-            logger.error(f"Échec d'enregistrement des prédictions: {e}")
+            logger.error(f" Échec d'enregistrement des prédictions: {e}")
             raise
         finally:
             cursor.close()
@@ -272,12 +289,17 @@ def load_from_postgres(db_config: dict, dataset_hash: Optional[str] = None):
     """
     Charge les données depuis PostgreSQL.
     
+    VERSION CORRIGÉE :
+    - project.items n'a PAS de row_index
+    - On crée un row_index technique après chargement
+    - Structure réelle: (productid, imageid, designation, description, prdtypecode)
+    
     Args:
         db_config: Configuration de la base
         dataset_hash: Hash spécifique (optionnel)
     
     Returns:
-        Tuple (X_train, y_train, X_test)
+        Tuple (X_train, y_train, X_test, dataset_hash)
     """
     logger.info("=" * 70)
     logger.info("ÉTAPE 1 : INGESTION DES DONNÉES (PostgreSQL)")
@@ -302,58 +324,64 @@ def load_from_postgres(db_config: dict, dataset_hash: Optional[str] = None):
             if dataset_hash:
                 logger.info(f"Dataset hash: {dataset_hash[:12]}...")
         
-        # Charger train (avec labels)
+        # ================================================================
+        # CHARGER TRAIN (avec labels) - SANS row_index
+        # ================================================================
         logger.info("\nChargement des données d'entraînement...")
         query_train = """
             SELECT 
-                designation,
-                description,
                 productid,
                 imageid,
+                designation,
+                description,
                 prdtypecode
             FROM project.items
             WHERE prdtypecode IS NOT NULL
+            ORDER BY productid
         """
         df_train = pd.read_sql_query(query_train, conn)
         
-        # On recrée un identifiant de ligne pour rester compatible avec le reste du code
-        df_train = df_train.reset_index().rename(columns={"index": "row_index"})
-
+        # Séparer features et labels
         X_train = df_train.drop(columns=['prdtypecode'])
         y_train = df_train['prdtypecode']
         
+        #  CRÉER un row_index technique pour compatibilité
+        X_train = X_train.reset_index().rename(columns={'index': 'row_index'})
+        
         logger.info(f" X_train: {X_train.shape}")
         logger.info(f" y_train: {y_train.shape}")
+        logger.info(f"  Colonnes: {list(X_train.columns)}")
         
-        # Charger test (sans labels)
+        # ================================================================
+        # CHARGER TEST (sans labels) - SANS row_index
+        # ================================================================
         logger.info("\nChargement des données de test...")
         query_test = """
             SELECT 
-                designation,
-                description,
                 productid,
-                imageid
+                imageid,
+                designation,
+                description
             FROM project.items
             WHERE prdtypecode IS NULL
+            ORDER BY productid
         """
         X_test = pd.read_sql_query(query_test, conn)
         
-        # On fabrique un row_index technique
-        X_test = X_test.reset_index().rename(columns={"index": "row_index"})
-
-        # Si pas de test dans project.items, on peut charger depuis CSV
+        # Si pas de test dans project.items, fallback sur CSV
         if len(X_test) == 0:
-            logger.warning("Aucune donnée de test dans PostgreSQL")
-            # Fallback: charger depuis CSV si configuré
+            logger.warning(" Aucune donnée de test dans PostgreSQL")
+            logger.info("  Tentative de chargement depuis CSV...")
             from src.data.load_data import load_test_data
             from src.utils.config import load_config
             config = load_config()
             X_test = load_test_data(config.paths["x_test_csv"])
-
-            # Harmoniser le schéma avec X_train : créer row_index technique
-            X_test = X_test.reset_index().rename(columns={"index": "row_index"})
+        
+        #  CRÉER un row_index technique pour compatibilité
+        X_test = X_test.reset_index().rename(columns={'index': 'row_index'})
         
         logger.info(f" X_test: {X_test.shape}")
+        logger.info(f"  Colonnes: {list(X_test.columns)}")
         
         logger.info("\n" + "=" * 70)
         logger.info(f" Chargement terminé: {len(X_train)} train + {len(X_test)} test")
@@ -372,7 +400,7 @@ def load_from_postgres(db_config: dict, dataset_hash: Optional[str] = None):
 def parse_args():
     """Parse les arguments de la ligne de commande."""
     parser = argparse.ArgumentParser(
-        description="Pipeline d'entraînement PostgreSQL Rakuten"
+        description="Pipeline d'entraînement PostgreSQL Rakuten (Version Corrigée)"
     )
     
     parser.add_argument(
@@ -442,9 +470,10 @@ def main():
     setup_logging(level=log_level)
     
     logger.info("\n" + "=" * 70)
-    logger.info("PIPELINE D'ENTRAÎNEMENT RAKUTEN - MODE POSTGRESQL")
+    logger.info("PIPELINE D'ENTRAÎNEMENT RAKUTEN - MODE POSTGRESQL (CORRIGÉ)")
     logger.info("=" * 70)
     logger.info("Architecture: 5 stages + Registry PostgreSQL")
+    logger.info("Corrections: productid, dataset_id, sans row_index natif")
     logger.info("=" * 70 + "\n")
     
     # Chargement de la configuration
@@ -509,7 +538,7 @@ def main():
                     logger.error("\n Validation échouée - Arrêt du pipeline")
                     return 1
             else:
-                logger.warning("\n⚠ Validation ignorée (--skip-validation)")
+                logger.warning("\n Validation ignorée (--skip-validation)")
             
             # ================================================
             # ÉTAPE 3 : Data Transformation
@@ -523,18 +552,33 @@ def main():
                 X_train, y_train, X_test
             )
             
-            # Enregistrer les splits dans PostgreSQL
+            # ================================================================
+            # ENREGISTRER LES SPLITS DANS POSTGRESQL (VERSION CORRIGÉE)
+            # ================================================================
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             try:
-                registry.register_split(
-                    dataset_hash=dataset_hash,
-                    split_name=f"train_{timestamp}",
-                    indices=X_train['row_index'].values,
-                    note=f"Train split - {len(X_train)} samples"
-                )
+                # Récupérer le dataset_id du dernier dataset
+                dataset_id = registry.get_latest_dataset_id()
+                
+                if dataset_id and 'productid' in X_train.columns:
+                    logger.info("\nEnregistrement du split 'train' dans PostgreSQL...")
+                    
+                    # Extraire les productid uniques
+                    productids = X_train['productid'].dropna().unique()
+                    
+                    # Enregistrer avec la fonction corrigée
+                    registry.register_split(
+                        dataset_id=dataset_id,
+                        split_name='train',
+                        productids=productids,
+                        note=f"Train split - {len(productids)} products - {timestamp}"
+                    )
+                else:
+                    logger.warning(" Impossible d'enregistrer le split (dataset_id ou productid manquant)")
+                    
             except Exception as e:
-                logger.warning(f"Impossible d'enregistrer le split: {e}")
+                logger.warning(f" Impossible d'enregistrer le split: {e}")
             
             # ================================================
             # ÉTAPE 4 : Model Training
@@ -610,11 +654,22 @@ def main():
             
             # Nom du modèle
             model_name = args.model_name or f"rakuten_{config.model['name']}_{timestamp}"
-            
+
             # Chemin du modèle
-            model_path = stage4.trainer.get_model_path()
+            if hasattr(stage4, "model_path") and stage4.model_path is not None:
+                model_path = Path(stage4.model_path)
+            elif hasattr(stage4, "trainer") and hasattr(stage4.trainer, "model_path"):
+                model_path = Path(stage4.trainer.model_path)
+            else:
+                model_out = config.get("outputs.model_out", "artifacts/model_{kind}_{phase}.joblib")
+                model_out = model_out.replace("{kind}", config.model["name"])
+                model_out = model_out.replace("{phase}", "final")
+                model_path = Path(model_out)
+            
+            logger.info(f"Chemin du modèle : {model_path}")
             
             # Enregistrer le modèle
+            model_id = None  # ← Initialiser pour éviter UnboundLocalError
             try:
                 model_id = registry.register_model(
                     model_name=model_name,
@@ -623,7 +678,7 @@ def main():
                     metrics=metrics,
                     model_path=str(model_path),
                     config=dict(config.model),
-                    note=f"Trained with {len(X_train_t)} samples"
+                    note=f"Trained with {len(X_train_t)} samples - {timestamp}"
                 )
                 
                 logger.info(f" Modèle enregistré (ID: {model_id})")
@@ -639,6 +694,7 @@ def main():
                 
             except Exception as e:
                 logger.error(f" Échec d'enregistrement: {e}")
+                logger.warning(" Le modèle n'a pas pu être enregistré dans PostgreSQL")
         
         # ================================================
         # Résumé final
@@ -664,7 +720,12 @@ def main():
         logger.info(f"  • Prédictions: {pred_output_path}")
         
         logger.info(f"\nPostgreSQL:")
-        logger.info(f"  • Model ID: {model_id}")
+        if model_id:
+            logger.info(f"  • Model ID: {model_id}")
+            logger.info(f"  • Splits enregistrés dans project.splits")
+        else:
+            logger.info(f"  • Modèle NON enregistré (table project.models inexistante)")
+            logger.info(f"  • Splits enregistrés dans project.splits")
         logger.info(f"  • Database: {db_config['database']}")
         
         logger.info("\n" + "=" * 70 + "\n")

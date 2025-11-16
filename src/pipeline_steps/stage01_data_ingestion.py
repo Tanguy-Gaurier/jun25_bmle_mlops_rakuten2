@@ -1,11 +1,13 @@
 """
-Étape 1 : Ingestion des données (Data Ingestion) - Version PostgreSQL hybride.
-=============================================================================
+Étape 1 : Ingestion des données (Data Ingestion) - Version PostgreSQL corrigée.
+==============================================================================
 
 Cette étape gère le chargement des données depuis CSV OU PostgreSQL.
+S'adapter à la structure project.items 
 
 Responsabilités :
 - Charger depuis CSV (mode legacy/dev) ou PostgreSQL (mode production)
+- Créer un row_index technique après chargement pour compatibilité
 - Valider la cohérence des données
 - Afficher des statistiques de base
 
@@ -52,6 +54,7 @@ class DataIngestionPipeline:
     Pipeline d'ingestion des données hybride (CSV ou PostgreSQL).
     
     Charge les données d'entraînement et de test depuis CSV ou PostgreSQL.
+    VERSION CORRIGÉE : Adapté à la structure project.items (sans row_index).
     
     Attributes:
         config: Configuration complète du projet
@@ -136,7 +139,14 @@ class DataIngestionPipeline:
             raise ConnectionError(f"Échec de connexion à PostgreSQL: {e}")
     
     def _load_from_postgres(self) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
-        """Charge les données depuis PostgreSQL (mode production)."""
+        """
+        Charge les données depuis PostgreSQL (mode production).
+        
+        CORRECTION IMPORTANTE :
+        - project.items n'a PAS de row_index
+        - On crée un row_index technique après chargement pour compatibilité
+        - Structure réelle: (productid, imageid, designation, description, prdtypecode)
+        """
         logger.info("\n--- Chargement depuis PostgreSQL ---")
         
         conn = self._get_db_connection()
@@ -160,54 +170,64 @@ class DataIngestionPipeline:
             
             cursor.close()
             
-            # Charger les données d'entraînement (avec labels)
-            logger.info("Chargement des données d'entraînement...")
+            # ================================================================
+            # CHARGER TRAIN (avec labels) - SANS row_index
+            # ================================================================
+            logger.info("\nChargement des données d'entraînement...")
             query_train = """
                 SELECT 
-                    designation,
-                    description,
                     productid,
                     imageid,
+                    designation,
+                    description,
                     prdtypecode
                 FROM project.items
                 WHERE prdtypecode IS NOT NULL
+                ORDER BY productid
             """
             df_train = pd.read_sql_query(query_train, conn)
-
-            # On recrée un identifiant de ligne pour rester compatible avec le reste du code
-            df_train = df_train.reset_index().rename(columns={"index": "row_index"})
             
+            # Séparer features et labels
             X_train = df_train.drop(columns=['prdtypecode'])
             y_train = df_train['prdtypecode']
             
+            #  CRÉER un row_index technique pour compatibilité avec le reste du code
+            X_train = X_train.reset_index().rename(columns={'index': 'row_index'})
+            
             logger.info(f" X_train chargé: {X_train.shape}")
             logger.info(f" y_train chargé: {y_train.shape}")
+            logger.info(f"  Colonnes: {list(X_train.columns)}")
             
-            # Charger les données de test (sans labels)
-            logger.info("Chargement des données de test...")
+            # ================================================================
+            # CHARGER TEST (sans labels) - SANS row_index
+            # ================================================================
+            logger.info("\nChargement des données de test...")
             query_test = """
                 SELECT 
-                    designation,
-                    description,
                     productid,
-                    imageid
+                    imageid,
+                    designation,
+                    description
                 FROM project.items
                 WHERE prdtypecode IS NULL
+                ORDER BY productid
             """
             X_test = pd.read_sql_query(query_test, conn)
-            # On fabrique un row_index technique
-            X_test = X_test.reset_index().rename(columns={"index": "row_index"})
-
-            logger.info(f"✓ X_test chargé: {X_test.shape}")
             
-            # Si pas de données de test dans project.items, charger depuis CSV
+            # Si pas de données de test dans project.items, fallback sur CSV
             if len(X_test) == 0:
-                logger.warning("Aucune donnée de test dans PostgreSQL")
-                logger.info("Tentative de chargement depuis CSV...")
+                logger.warning(" Aucune donnée de test dans PostgreSQL")
+                logger.info("  Tentative de chargement depuis CSV...")
                 X_test = load_test_data(
                     x_test_path=self.config.paths["x_test_csv"]
                 )
-                X_test = X_test.reset_index().rename(columns={"index": "row_index"})
+            
+            #  CRÉER un row_index technique pour compatibilité
+            X_test = X_test.reset_index().rename(columns={'index': 'row_index'})
+            
+            logger.info(f" X_test chargé: {X_test.shape}")
+            logger.info(f"  Colonnes: {list(X_test.columns)}")
+            
             return X_train, y_train, X_test
             
         finally:
@@ -262,11 +282,11 @@ class DataIngestionPipeline:
             logger.info(f" X_train : {X_train.shape}")
             logger.info(f" y_train : {y_train.shape}")
             logger.info(f" X_test  : {X_test.shape}")
-            logger.info(f" Colonnes : {list(X_train.columns)}")
-            logger.info(f" Classes : {y_train.nunique()}")
+            logger.info(f"  Colonnes : {list(X_train.columns)}")
+            logger.info(f"  Classes : {y_train.nunique()}")
             
             if self.source == "postgres":
-                logger.info(f" Database: {self.db_config['database']}@{self.db_config['host']}")
+                logger.info(f"  Database: {self.db_config['database']}@{self.db_config['host']}")
             
             logger.info("=" * 70 + "\n")
             
@@ -284,7 +304,7 @@ if __name__ == "__main__":
     setup_logging(level=logging.INFO)
     
     print("\n" + "="*70)
-    print("Test de DataIngestionPipeline (Mode Hybride)")
+    print("Test de DataIngestionPipeline (Version Corrigée)")
     print("="*70 + "\n")
     
     try:
@@ -318,3 +338,27 @@ if __name__ == "__main__":
         print(f"\n Erreur inattendue: {e}")
         import traceback
         traceback.print_exc()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
