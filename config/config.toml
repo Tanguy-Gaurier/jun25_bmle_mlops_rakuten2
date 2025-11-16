@@ -26,7 +26,7 @@ test_dir  = "data/images/images/image_test"
 # SORTIES
 # ========================================
 [outputs]
-model_out = "artifacts/model_{kind}_{phase}.joblib"
+model_out = "models/model_full_pipeline_joblib"
 pred_out  = "results/preds_{kind}_{phase}.csv"
 compare_out = "models/compare_cv_results.csv"
 oof_out   = "results/preds_oof_{kind}.csv"

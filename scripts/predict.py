@@ -14,15 +14,10 @@ Fonctionnalités :
 - Sauvegarde dans PostgreSQL (optionnel)
 
 Utilisation:
-    # Prédiction sur CSV
-    python scripts/predict.py --model-path models/rakuten_xgb_final.pkl
-    
-    # Prédiction depuis PostgreSQL
-    python scripts/predict.py --model-id 1 --source postgres
     
     # Avec sauvegarde en base
     python scripts/predict.py --model-id 1 --save-to-db
-    python scripts/predict.py --model-path models/model_full_pipeline.joblib --source postgres --output results/predictions/predictions_postgres.csv --verbose
+    python scripts/predict.py --model-path models/model_full_pipeline.joblib --source postgres --output results/predictions/final.csv --verbose
 """
 import argparse
 import logging
@@ -164,7 +159,9 @@ class PostgresModelLoader:
 def load_data_from_postgres(db_config, dataset_type="test"):
     """
     Charge les données depuis PostgreSQL.
-    dataset_type = "test" -> items sans label (prdtypecode IS NULL)
+    
+    dataset_type = "test" -> données de test depuis project.stg_x_test
+    (structure : row_index, designation, description, productid, imageid)
     """
     logger.info("Chargement des données depuis PostgreSQL (%s)...", dataset_type)
 
@@ -180,30 +177,58 @@ def load_data_from_postgres(db_config, dataset_type="test"):
         if dataset_type == "test":
             query = """
                 SELECT
+                    row_index,
                     designation,
                     description,
                     productid,
                     imageid
-                FROM project.items
-                WHERE prdtypecode IS NULL
-                ORDER BY productid
+                FROM project.stg_x_test
+                ORDER BY row_index
             """
         else:
             raise ValueError(f"dataset_type inconnu: {dataset_type}")
 
         df = pd.read_sql_query(query, conn)
 
-        # On recrée un row_index côté Pandas comme dans training.py
-        df = df.reset_index().rename(columns={"index": "row_index"})
+        # ================================================================
+        # FALLBACK vers CSV si PostgreSQL ne retourne rien
+        # ================================================================
+        if len(df) == 0:
+            logger.warning(" Aucune donnée de test dans PostgreSQL (stg_x_test vide)")
+            logger.info("  Tentative de chargement depuis CSV...")
+            conn.close()
+            
+            # Charger depuis CSV
+            from src.data.load_data import load_test_data
+            from src.utils.config import load_config
+            config = load_config()
+            df = load_test_data(config.paths["x_test_csv"])
+        else:
+            conn.close()
 
-        logger.info(" Données chargées depuis PostgreSQL")
+        # Gestion propre de row_index :
+        # - si row_index existe (cas Postgres stg_x_test) : on garde, on ordonne, on reset l'index
+        # - sinon (cas fallback CSV) : on crée row_index à partir de l'index
+        if "row_index" in df.columns:
+            df = df.sort_values("row_index").reset_index(drop=True)
+        else:
+            df = df.reset_index().rename(columns={"index": "row_index"})
+
+        logger.info("✓ Données chargées")
         logger.info("  Shape: %s", df.shape)
         logger.debug("  Colonnes: %s", list(df.columns))
 
         return df
 
+    except Exception as e:
+        logger.error(f"Erreur lors du chargement: {e}")
+        raise
     finally:
-        conn.close()
+        try:
+            if conn and not conn.closed:
+                conn.close()
+        except:
+            pass
 
 
 # =============================================================================
@@ -220,7 +245,7 @@ def load_model_and_pipeline(
     Charge le modèle et le pipeline de features.
     
     Args:
-        model_path: Chemin vers le modèle .pkl
+        model_path: Chemin vers le modèle .pkl / .joblib
         model_id: ID du modèle dans PostgreSQL
         model_name: Nom du modèle dans PostgreSQL
         db_config: Configuration PostgreSQL
@@ -240,7 +265,7 @@ def load_model_and_pipeline(
         model_path_db = model_metadata['model_path']
         logger.info(f"Modèle: {model_metadata['model_name']}")
         logger.info(f"Type: {model_metadata['model_type']}")
-        logger.info(f"Entraîné le: {model_metadata['trained_at']}")
+        logger.info(f"Entraîné le: {model_metadata['created_at']}")
         logger.info(f"Métriques: {model_metadata['metrics']}")
         
         model_path = model_path_db
@@ -433,7 +458,7 @@ def parse_args():
     model_group.add_argument(
         "--model-path",
         type=str,
-        help="Chemin vers le modèle .pkl"
+        help="Chemin vers le modèle .pkl/.joblib"
     )
     model_group.add_argument(
         "--model-id",
@@ -671,7 +696,6 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
 
 
 
