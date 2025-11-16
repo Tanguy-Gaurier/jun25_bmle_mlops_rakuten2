@@ -669,6 +669,7 @@ def main():
             logger.info(f"Chemin du modèle : {model_path}")
             
             # Enregistrer le modèle
+            model_id = None  # ← Initialiser pour éviter UnboundLocalError
             try:
                 model_id = registry.register_model(
                     model_name=model_name,
@@ -693,6 +694,7 @@ def main():
                 
             except Exception as e:
                 logger.error(f" Échec d'enregistrement: {e}")
+                logger.warning(" Le modèle n'a pas pu être enregistré dans PostgreSQL")
         
         # ================================================
         # Résumé final
@@ -718,7 +720,12 @@ def main():
         logger.info(f"  • Prédictions: {pred_output_path}")
         
         logger.info(f"\nPostgreSQL:")
-        logger.info(f"  • Model ID: {model_id}")
+        if model_id:
+            logger.info(f"  • Model ID: {model_id}")
+            logger.info(f"  • Splits enregistrés dans project.splits")
+        else:
+            logger.info(f"  • Modèle NON enregistré (table project.models inexistante)")
+            logger.info(f"  • Splits enregistrés dans project.splits")
         logger.info(f"  • Database: {db_config['database']}")
         
         logger.info("\n" + "=" * 70 + "\n")
