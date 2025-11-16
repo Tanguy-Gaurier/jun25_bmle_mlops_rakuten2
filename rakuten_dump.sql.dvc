@@ -1,0 +1,5 @@
+outs:
+- md5: b72d7d1f3553b5636111c56b4087714e
+  size: 185506934
+  hash: md5
+  path: rakuten_dump.sql
